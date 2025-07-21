@@ -82,19 +82,18 @@ pub fn prob_mission_succeedes<'a>(
 
 /// turns `nums` into the next lexicographic larger permutation.
 /// if no such permutation exists, `nums` is turned in the smallest permutation and `false` is returned.
-/// stolen from https://codereview.stackexchange.com/questions/259168/rust-implementation-of-next-permutation.
 pub fn next_permutation<T: Ord>(nums: &mut [T]) -> bool {
-    use std::cmp::Ordering;
-    let Some(last_ascending) = nums.windows(2).rposition(|w| w[0] < w[1]) else {
+    let Some(left) = nums.windows(2).rposition(|w| w[0] < w[1]) else {
         nums.reverse();
         return false;
     };
-
-    let swap_with = nums[(last_ascending + 1)..]
-        .binary_search_by(|n| T::cmp(&nums[last_ascending], n).then(Ordering::Less))
-        .unwrap_err(); // cannot fail because the binary search will never succeed
-    nums.swap(last_ascending, last_ascending + swap_with);
-    nums[last_ascending + 1..].reverse();
+    let right_off = left + 1;
+    let gt_left = |n| n > &nums[left];
+    debug_assert!(gt_left(&nums[right_off]));
+    // can always unwrap, because we know right_off fulfills condition.
+    let right = nums[right_off..].iter().rposition(gt_left).unwrap();
+    nums.swap(left, right_off + right);
+    nums[right_off..].reverse();
     true
 }
 
@@ -192,13 +191,14 @@ pub fn compute_all_options(site_probs: &[Prob], nr_drones: usize) -> Vec<(Prob, 
         }
     }
 
-    all_paths_with_probs.sort_by(|a, b| a.0.cmp(&b.0));
+    all_paths_with_probs.sort_by_key(|x| x.0);
     all_paths_with_probs
 }
 
 pub fn main() {
-    let site_probs = [Prob::new(0.4), Prob::new(0.5), Prob::new(0.7)];
-    let nr_drones = 6;
+    //let site_probs = [Prob::new(0.25), Prob::new(0.5), Prob::new(0.75)];
+    let site_probs = [Prob::new(0.25), Prob::new(0.75)];
+    let nr_drones = 4;
     let res = compute_all_options(&site_probs, nr_drones);
     for (prob, paths) in res {
         println!("{prob} {paths}");
@@ -230,7 +230,7 @@ mod text {
     }
 
     #[test]
-    fn next_permutation_works() {
+    fn next_permutation_works_1() {
         let mut sample = [1, 2, 3, 4];
         assert!(next_permutation(&mut sample));
         assert_eq!(sample, [1, 2, 4, 3]);
@@ -244,5 +244,16 @@ mod text {
         sample = [4, 3, 2, 1];
         assert!(!next_permutation(&mut sample));
         assert_eq!(sample, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn next_permutation_works_2() {
+        let mut sample = [0, 0, 1, 0];
+        assert!(next_permutation(&mut sample));
+        assert_eq!(sample, [0, 1, 0, 0]);
+        assert!(next_permutation(&mut sample));
+        assert_eq!(sample, [1, 0, 0, 0]);
+        assert!(!next_permutation(&mut sample));
+        assert_eq!(sample, [0, 0, 0, 1]);
     }
 }
