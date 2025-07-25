@@ -103,6 +103,7 @@ pub fn next_permutation<T: Ord>(nums: &mut [T]) -> bool {
 pub struct DronePaths {
     /// stores all paths of length `self.nr_sites` continuously in memory
     flat: Vec<usize>,
+    /// stores chunk size of [`Self::flat`]
     nr_sites: usize,
 }
 
