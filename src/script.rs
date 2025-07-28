@@ -1,4 +1,4 @@
-use itertools::Itertools;
+use itertools::{Itertools, izip};
 
 use super::Prob;
 
@@ -10,63 +10,34 @@ fn drone_paths_valid<'a>(
     drone_paths.all(|path| path.iter().all(|&s| s < nr_sites))
 }
 
-/// each drone may visit each site at most once
-fn drone_paths_non_repeating<'a>(drone_paths: impl Iterator<Item = &'a [usize]>) -> bool {
-    let mut visited = Vec::new();
-    for drone_path in drone_paths {
-        visited.clear();
-        visited.extend_from_slice(drone_path);
-        visited.sort();
-        if visited.iter().tuple_windows().any(|(a, b)| a == b) {
-            return false;
-        }
-    }
-    true
-}
-
-/// `site` indexes into `site_probs`, so does every item in every item of `drone_paths`.
-/// the number of flown drones is `drone_paths.count()`.
-/// note 1: although not assumed in ths function, it is of no utility to not visit every site with every drone.
-/// note 2: the site success probabilities are not indepentent.
-pub fn prob_site_succeedes<'a>(
-    site: usize,
-    site_probs: &[Prob],
-    drone_paths: impl Iterator<Item = &'a [usize]> + Clone,
-) -> Prob {
-    let nr_sites = site_probs.len();
-    debug_assert!(site < nr_sites);
-    debug_assert!(drone_paths_valid(nr_sites, drone_paths.clone()));
-
-    let relevant_paths_parts = drone_paths.filter_map(|path| {
-        path.iter()
-            .position(|&s| s == site)
-            .map(|i| &path[..(i + 1)])
-    });
-    let chance_per_drone =
-        relevant_paths_parts.map(|path| Prob::all(path.iter().map(|&s| site_probs[s])));
-    Prob::any(chance_per_drone)
-}
-
 /// the mission succeedes, if every site is successfully visited by at least one drone.
-/// note: this function has exponential complexity.
-pub fn prob_mission_succeedes<'a>(
-    site_probs: &[Prob],
+pub fn prob_mission_succeedes<'a, const N: usize>(
+    site_probs: &[Prob; N],
     drone_paths: impl Iterator<Item = &'a [usize]> + Clone,
 ) -> Prob {
-    let nr_sites = site_probs.len();
-    debug_assert!(drone_paths_valid(nr_sites, drone_paths.clone()));
-    debug_assert!(drone_paths_non_repeating(drone_paths.clone()));
+    use std::collections::HashMap;
+    debug_assert!(drone_paths_valid(site_probs.len(), drone_paths.clone()));
 
     const NOT_VISITED: usize = usize::MAX;
-    let mut visited_sites = vec![NOT_VISITED; nr_sites];
+    let mut visited_sites = [NOT_VISITED; N];
+
+    fn visited_sites_bool<const N: usize>(visited_sites: &[usize; N]) -> [bool; N] {
+        let mut res = [false; N];
+        for (r, &s) in izip!(&mut res, visited_sites) {
+            *r = s != NOT_VISITED;
+        }
+        res
+    }
+    let mut memory = HashMap::new();
 
     /// if `i_drone` many drones have flown so far
     /// and successfully visited every site `j` where `visited_sites[j] != NOT_VISITED`,
     /// what is the probability that the mission succedes overall?
-    fn prob_remaining_mission_succeedes<'b>(
+    fn prob_remaining_mission_succeedes<'b, const N: usize>(
         i_drone: usize,
-        visited_sites: &mut [usize],
-        site_probs: &[Prob],
+        memory: &mut HashMap<([bool; N], usize), Prob>,
+        visited_sites: &mut [usize; N],
+        site_probs: &[Prob; N],
         mut remaining_drone_paths: impl Iterator<Item = &'b [usize]> + Clone,
     ) -> Prob {
         if !visited_sites.contains(&NOT_VISITED) {
@@ -75,6 +46,10 @@ pub fn prob_mission_succeedes<'a>(
         let Some(drone_i_path) = remaining_drone_paths.next() else {
             return Prob::NEVER;
         };
+        let memoised_state = (visited_sites_bool(visited_sites), i_drone);
+        if let Some(val) = memory.get(&memoised_state) {
+            return *val;
+        }
 
         // this loop looks at disjoint events.
         // either drone_i dies at exactly the first visited site, or the second or ... or drone_i survives.
@@ -88,6 +63,7 @@ pub fn prob_mission_succeedes<'a>(
         // we try to not do it more than required.
         let mut finish_remaining = prob_remaining_mission_succeedes(
             i_drone + 1,
+            memory,
             visited_sites,
             site_probs,
             remaining_drone_paths.clone(),
@@ -102,6 +78,7 @@ pub fn prob_mission_succeedes<'a>(
                 // `visited_sites` was changed, so we must update the variable depending on it.
                 finish_remaining = prob_remaining_mission_succeedes(
                     i_drone + 1,
+                    memory,
                     visited_sites,
                     site_probs,
                     remaining_drone_paths.clone(),
@@ -117,10 +94,11 @@ pub fn prob_mission_succeedes<'a>(
             }
         }
 
+        memory.insert(memoised_state, mission_success);
         mission_success
     }
 
-    prob_remaining_mission_succeedes(0, &mut visited_sites, site_probs, drone_paths)
+    prob_remaining_mission_succeedes(0, &mut memory, &mut visited_sites, site_probs, drone_paths)
 }
 
 /// returns the number of distinct mutlisets with [`cardinality`] many elements
@@ -165,7 +143,7 @@ pub fn next_permutation<T: Ord>(nums: &mut [T]) -> bool {
 
 /// can only store those paths, where each drone visits each site exactly once.
 /// (any optimal set of paths satisfies this condition)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DronePaths {
     /// stores all paths of length `self.nr_sites` continuously in memory
     flat: Vec<usize>,
@@ -245,7 +223,10 @@ impl DronePaths {
 /// for the given set of sites and the given number of drones,
 /// the success probability of all possible paths (where each drone visits each site exactly once)
 /// is evaluated and returned.
-pub fn compute_all_options(site_probs: &[Prob], nr_drones: usize) -> Vec<(Prob, DronePaths)> {
+pub fn compute_all_options<const N: usize>(
+    site_probs: &[Prob; N],
+    nr_drones: usize,
+) -> Vec<(Prob, DronePaths)> {
     let nr_sites = site_probs.len();
     let mut paths = DronePaths::new(nr_drones, nr_sites);
     let mut all_paths_with_probs = Vec::new();
@@ -296,9 +277,10 @@ pub fn main() {
     let site_probs = [
         Prob::new(0.41),
         Prob::new(0.5),
+        Prob::new(0.551),
         Prob::new(0.62),
         Prob::new(0.83),
-        Prob::new(0.87),
+        //Prob::new(0.87),
         //Prob::new(0.92),
         //Prob::new(0.96),
     ];
@@ -324,8 +306,6 @@ pub fn main() {
 
 #[cfg(test)]
 mod text {
-    use itertools::izip;
-
     use super::*;
 
     #[test]
