@@ -11,6 +11,12 @@ impl Prob {
         self.0
     }
 
+    pub fn sample(self) -> bool {
+        use rand::distr::Distribution;
+        let dist = rand::distr::Bernoulli::new(self.0).unwrap();
+        dist.sample(&mut rand::rng())
+    }
+
     pub fn new(val: f64) -> Self {
         debug_assert!((0.0..=1.0).contains(&val));
         Self(val)
@@ -37,7 +43,7 @@ impl Prob {
 
 impl std::fmt::Display for Prob {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:.5}", self.0)
+        write!(f, "{:.10}", self.0)
     }
 }
 
@@ -79,6 +85,19 @@ impl std::ops::BitXor for Prob {
     type Output = Self;
     fn bitxor(self, rhs: Self) -> Self::Output {
         (self | rhs) & !(self & rhs)
+    }
+}
+
+impl std::ops::Add for Prob {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self::Output {
+        Self::new(self.0 + rhs.0)
+    }
+}
+
+impl std::ops::AddAssign for Prob {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
     }
 }
 
