@@ -75,30 +75,41 @@ pub fn prob_mission_succeedes<'a>(
         let Some(drone_i_path) = remaining_drone_paths.next() else {
             return Prob::NEVER;
         };
-        let remaining_success = |visited_sites: &mut [usize]| {
-            prob_remaining_mission_succeedes(
-                i_drone + 1,
-                visited_sites,
-                site_probs,
-                remaining_drone_paths.clone(),
-            )
-        };
+
         // this loop looks at disjoint events.
         // either drone_i dies at exactly the first visited site, or the second or ... or drone_i survives.
         // because two of these events are impossible to happen simultaniously,
         // we can simply add the success chances of every case.
         let mut drone_i_still_alive = Prob::ALWAYS;
         let mut mission_success = Prob::NEVER;
+        // this variable could be recomputed every loop iteration,
+        // but if the currently visited site was already visited by an earlier drone, the value stays the same.
+        // because the exponential explosion happens in the recursion calls when this is recomputed,
+        // we try to not do it more than required.
+        let mut finish_remaining = prob_remaining_mission_succeedes(
+            i_drone + 1,
+            visited_sites,
+            site_probs,
+            remaining_drone_paths.clone(),
+        );
         for &drone_i_site in drone_i_path {
             let drone_i_dies_now = drone_i_still_alive & !site_probs[drone_i_site];
-            mission_success += drone_i_dies_now & remaining_success(visited_sites);
+            mission_success += drone_i_dies_now & finish_remaining;
 
             drone_i_still_alive &= site_probs[drone_i_site];
             if visited_sites[drone_i_site] == NOT_VISITED {
                 visited_sites[drone_i_site] = i_drone;
+                // `visited_sites` was changed, so we must update the variable depending on it.
+                finish_remaining = prob_remaining_mission_succeedes(
+                    i_drone + 1,
+                    visited_sites,
+                    site_probs,
+                    remaining_drone_paths.clone(),
+                );
             }
         }
-        mission_success += drone_i_still_alive & remaining_success(visited_sites);
+        let drone_i_never_dies = drone_i_still_alive;
+        mission_success += drone_i_never_dies & finish_remaining;
 
         for site in visited_sites {
             if *site == i_drone {
@@ -110,6 +121,29 @@ pub fn prob_mission_succeedes<'a>(
     }
 
     prob_remaining_mission_succeedes(0, &mut visited_sites, site_probs, drone_paths)
+}
+
+/// returns the number of distinct mutlisets with [`cardinality`] many elements
+/// chosen from a set with [`universe_size`] many elements.
+#[allow(dead_code)]
+fn multiset_count(universe_size: usize, cardinality: usize) -> Option<usize> {
+    fn binomial_coefficient(n: usize, k: usize) -> Option<usize> {
+        if k == 0 {
+            return Some(0);
+        }
+        let mut res: usize = 1;
+        for i in 1..=k {
+            res = res.checked_mul(n + 1 - i)?;
+            debug_assert_eq!(res % i, 0);
+            res /= i;
+        }
+        Some(res)
+    }
+    debug_assert_eq!(binomial_coefficient(10, 3), Some(120));
+    debug_assert_eq!(binomial_coefficient(20, 10), Some(184756));
+    debug_assert_eq!(binomial_coefficient(8, 6), Some(28));
+
+    binomial_coefficient(universe_size + cardinality - 1, cardinality)
 }
 
 /// turns `nums` into the next lexicographic larger permutation.
@@ -279,7 +313,7 @@ pub fn main() {
             println!("{prob} ({estimate}) {paths}");
         }
     };
-    if res.len() > 1000 {
+    if res.len() > 500 {
         print_res_slice(&res[..50]);
         println!("...");
         print_res_slice(&res[(res.len() - 50)..]);
@@ -338,28 +372,6 @@ mod text {
         let mut nr_paths = 1;
         while drone_paths.next_paths_permutation() {
             nr_paths += 1;
-        }
-
-        /// returns the number of distinct mutlisets with [`cardinality`] many elements
-        /// chosen from a set with [`universe_size`] many elements.
-        fn multiset_count(universe_size: usize, cardinality: usize) -> Option<usize> {
-            fn binomial_coefficient(n: usize, k: usize) -> Option<usize> {
-                if k == 0 {
-                    return Some(0);
-                }
-                let mut res: usize = 1;
-                for i in 1..=k {
-                    res = res.checked_mul(n + 1 - i)?;
-                    debug_assert_eq!(res % i, 0);
-                    res /= i;
-                }
-                Some(res)
-            }
-            debug_assert_eq!(binomial_coefficient(10, 3), Some(120));
-            debug_assert_eq!(binomial_coefficient(20, 10), Some(184756));
-            debug_assert_eq!(binomial_coefficient(8, 6), Some(28));
-
-            binomial_coefficient(universe_size + cardinality - 1, cardinality)
         }
 
         let universe_size = 5 * 4 * 3 * 2 * 1;
