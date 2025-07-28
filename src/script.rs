@@ -27,7 +27,7 @@ fn drone_paths_non_repeating<'a>(drone_paths: impl Iterator<Item = &'a [usize]>)
 /// `site` indexes into `site_probs`, so does every item in every item of `drone_paths`.
 /// the number of flown drones is `drone_paths.count()`.
 /// note 1: although not assumed in ths function, it is of no utility to not visit every site with every drone.
-/// note 2: the site success propabilities are not indepentent.
+/// note 2: the site success probabilities are not indepentent.
 pub fn prob_site_succeedes<'a>(
     site: usize,
     site_probs: &[Prob],
@@ -209,7 +209,7 @@ impl DronePaths {
 }
 
 /// for the given set of sites and the given number of drones,
-/// the success propability of all possible paths (where each drone visits each site exactly once)
+/// the success probability of all possible paths (where each drone visits each site exactly once)
 /// is evaluated and returned.
 pub fn compute_all_options(site_probs: &[Prob], nr_drones: usize) -> Vec<(Prob, DronePaths)> {
     let nr_sites = site_probs.len();
@@ -238,7 +238,7 @@ fn simulate_success<'a>(
     let nr_successfull: usize = vec![(); nr_samples]
         .par_iter()
         .map(|_| {
-            use smallvec::{smallvec, SmallVec};
+            use smallvec::{SmallVec, smallvec};
             let mut visited_vec: SmallVec<[bool; 16]> = smallvec![false; nr_sites];
             let visited = &mut visited_vec[..];
             for path in drone_paths.clone() {
@@ -333,6 +333,43 @@ mod text {
     }
 
     #[test]
+    fn number_drone_paths_correct() {
+        let mut drone_paths = DronePaths::new(3, 5);
+        let mut nr_paths = 1;
+        while drone_paths.next_paths_permutation() {
+            nr_paths += 1;
+        }
+
+        /// returns the number of distinct mutlisets with [`cardinality`] many elements
+        /// chosen from a set with [`universe_size`] many elements.
+        fn multiset_count(universe_size: usize, cardinality: usize) -> Option<usize> {
+            fn binomial_coefficient(n: usize, k: usize) -> Option<usize> {
+                if k == 0 {
+                    return Some(0);
+                }
+                let mut res: usize = 1;
+                for i in 1..=k {
+                    res = res.checked_mul(n + 1 - i)?;
+                    debug_assert_eq!(res % i, 0);
+                    res /= i;
+                }
+                Some(res)
+            }
+            debug_assert_eq!(binomial_coefficient(10, 3), Some(120));
+            debug_assert_eq!(binomial_coefficient(20, 10), Some(184756));
+            debug_assert_eq!(binomial_coefficient(8, 6), Some(28));
+
+            binomial_coefficient(universe_size + cardinality - 1, cardinality)
+        }
+
+        let universe_size = 5 * 4 * 3 * 2 * 1;
+        let cardinality = 3;
+        let nr_multisets = multiset_count(universe_size, cardinality);
+
+        assert_eq!(Some(nr_paths), nr_multisets);
+    }
+
+    #[test]
     fn singe_site_mission() {
         let p = Prob::new(0.25);
         let site_probs = [p];
@@ -372,9 +409,10 @@ mod text {
         let best_prob = results.last().unwrap().0;
         let best_results = results
             .into_iter()
-            .filter_map(|(p, res)| (p >= best_prob & Prob::new(0.999999)).then_some(res))
+            .filter_map(|(p, res)| (p >= best_prob & Prob::new(0.9999999)).then_some(res))
             .collect_vec();
-        // all permutations should be
+        // TODO: all permutations of a single path should be `factorial(5)`.
+        // why do we only see half that?
         assert_eq!(best_results.len(), (5 * 4 * 3 * 2 * 1) / 2);
         for paths in best_results {
             for (site_a, site_b) in izip!(paths[0].iter(), paths[1].iter().rev()) {
