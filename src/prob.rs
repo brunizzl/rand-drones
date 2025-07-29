@@ -1,5 +1,7 @@
 /// short for _Propability_, thus the held data is assumed to be in the range `0.0..=1.0`.
-/// All operations on multiple propabilites assume they are independent from each other.
+/// All operations on multiple propabilites assume they are independent from each other,
+/// with the exceptions of `+` and `+=`, which actually just add the probabilites,
+/// therefore assume both events are impossible to occur at the same time.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Prob(f64);
 

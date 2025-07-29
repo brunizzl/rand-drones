@@ -11,6 +11,7 @@ fn drone_paths_valid<'a>(
 }
 
 /// the mission succeedes, if every site is successfully visited by at least one drone.
+/// this function implements the main computation part of the script.
 pub fn prob_mission_succeedes<'a>(
     site_probs: &[Prob],
     drone_paths: impl Iterator<Item = &'a [usize]> + Clone,
@@ -226,6 +227,7 @@ impl DronePaths {
     /// reorders drone paths, so that the next lexicographic larger combination of paths is produced.
     /// if such an ordering exists, the index of the start of the first changed path segment is returned,
     /// otherwise `None`.
+    /// note: in this program, the interesting cases of the output are `None`, `Some(0)` and the rest.
     pub fn next_paths_permutation(&mut self) -> Option<usize> {
         let mut path_start = self.flat.len();
         debug_assert!(path_start % self.nr_sites == 0);
@@ -253,7 +255,8 @@ pub fn compute_all_options(site_probs: &[Prob], nr_drones: usize) -> Vec<(Prob, 
     compute_best_options_parallel(site_probs, nr_drones, usize::MAX >> 4)
 }
 
-/// same as [`compute_all_options`], except only keeps the specified number of best options
+/// same as [`compute_all_options`], except only keeps the specified number of best options.
+/// note: this sequential implementation is mainly kept around to verify the parallel implmentation.
 pub fn compute_best_options_sequential(
     site_probs: &[Prob],
     nr_drones: usize,
@@ -302,7 +305,9 @@ pub fn compute_best_options_sequential(
 
     best
 }
-/// same as [`compute_best_options`], except uses more than a single core at once.
+
+/// computes the exact same result as [`compute_best_options_sequential`],
+/// but utilizes all the machines cores while doing so.
 pub fn compute_best_options_parallel(
     site_probs: &[Prob],
     nr_drones: usize,
@@ -375,7 +380,11 @@ pub fn compute_best_options_parallel(
     best
 }
 
-fn simulate_success<'a>(
+/// this function tries to compute the same as [`prob_mission_succeedes`], but by experiment.
+/// if the other approach is done correctly, it only suffers from floating point errors.
+/// we can't hope to get this precise in reasonable time with the simulation approach.
+/// this function therefore exists mainly to validate the implementation of [`prob_mission_succeedes`].
+fn simulate_success_prob<'a>(
     nr_samples: usize,
     site_probs: &[Prob],
     drone_paths: impl Iterator<Item = &'a [usize]> + Clone + Sync,
@@ -423,7 +432,7 @@ pub fn main() {
     let res = compute_best_options_parallel(&site_probs, nr_drones, nr_kept);
     println!("show best {nr_kept} results.");
     for (prob, paths) in res {
-        let estimate = simulate_success(nr_simulations, &site_probs, paths.iter());
+        let estimate = simulate_success_prob(nr_simulations, &site_probs, paths.iter());
         println!("{prob} (ca. {estimate})   {paths}");
     }
 }
