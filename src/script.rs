@@ -145,7 +145,7 @@ fn multiset_count(universe_size: usize, cardinality: usize) -> Option<usize> {
 
 /// turns `nums` into the next lexicographic larger permutation.
 /// if no such permutation exists, `nums` is turned in the smallest permutation and `false` is returned.
-pub fn next_permutation<T: Ord>(nums: &mut [T]) -> bool {
+pub fn next_permutation<T: PartialOrd>(nums: &mut [T]) -> bool {
     let Some(left) = nums.windows(2).rposition(|w| w[0] < w[1]) else {
         nums.reverse();
         return false;
@@ -283,7 +283,7 @@ pub fn compute_best_options_sequential(
         let prob = prob_mission_succeedes(site_probs, paths.iter());
         if prob > cutoff_prob {
             best.push((prob, paths.clone()));
-            if best.len() >= 2 * nr_kept_paths {
+            if best.len() / 2 >= nr_kept_paths {
                 best.sort_by_key(|x| !x.0);
                 best.truncate(nr_kept_paths);
                 cutoff_prob = best.last().unwrap().0;
@@ -329,7 +329,7 @@ pub fn compute_best_options_parallel(
 
     // all possible permutations of the first drone path packed together in one looooong vector
     // (note: i was not able to get the parallel iterator to work with some lazy structure, thus we do this instead.)
-    let first_drone_paths = {
+    let fst_drone_paths_flat = {
         let len = factorial(nr_sites)
             .and_then(|fac| fac.checked_mul(nr_sites))
             .unwrap();
@@ -342,8 +342,8 @@ pub fn compute_best_options_parallel(
         debug_assert_eq!(res.len(), len);
         res
     };
-    let chunks = first_drone_paths.chunks(nr_sites).collect_vec();
-    let mut best = chunks
+    let fst_drone_paths = fst_drone_paths_flat.chunks(nr_sites).collect_vec();
+    let mut best = fst_drone_paths
         .par_iter()
         .map(|fst_drone_path| {
             let mut paths = DronePaths::new(nr_drones, fst_drone_path.iter().copied());
@@ -353,7 +353,7 @@ pub fn compute_best_options_parallel(
                 let prob = prob_mission_succeedes(site_probs, paths.iter());
                 if prob > cutoff_prob {
                     best.push((prob, paths.clone()));
-                    if best.len() >= 2 * nr_kept_paths {
+                    if best.len() / 2 >= nr_kept_paths {
                         best.sort_by_key(|x| !x.0);
                         best.truncate(nr_kept_paths);
                         cutoff_prob = best.last().unwrap().0;
@@ -424,6 +424,7 @@ pub fn main() {
         //Prob::new(0.92),
         //Prob::new(0.96),
     ];
+    //let site_probs = [Prob::new(0.5); 5];
     let nr_drones = 3;
     let nr_kept = 100;
     let nr_simulations = 0; //10_000_000;
@@ -438,8 +439,6 @@ pub fn main() {
 
 #[cfg(test)]
 mod text {
-    use itertools::izip;
-
     use super::*;
 
     #[test]
@@ -477,7 +476,7 @@ mod text {
         while next_permutation(&mut order) {
             nr_permutations += 1;
         }
-        assert_eq!(nr_permutations, 6 * 5 * 4 * 3 * 2 * 1);
+        assert_eq!(nr_permutations, factorial(order.len()).unwrap());
     }
 
     #[test]
@@ -505,14 +504,14 @@ mod text {
     fn same_order_drones() {
         let site_probs = [Prob::new(0.25), Prob::new(0.5), Prob::new(0.75)];
         let nr_drones = 4;
-        let drone_paths_1 = std::iter::repeat_n(&[0usize, 1, 2] as &[_], nr_drones);
-        let drone_paths_2 = std::iter::repeat_n(&[2usize, 1, 0] as &[_], nr_drones);
-        let drone_paths_3 = std::iter::repeat_n(&[1usize, 2, 0] as &[_], nr_drones);
+        let drone_paths_1 = DronePaths::new(nr_drones, [0usize, 1, 2].into_iter());
+        let drone_paths_2 = DronePaths::new(nr_drones, [2usize, 1, 0].into_iter());
+        let drone_paths_3 = DronePaths::new(nr_drones, [1usize, 2, 0].into_iter());
 
         let success = Prob::any(std::iter::repeat_n(Prob::all(site_probs), nr_drones));
-        let success_1 = prob_mission_succeedes(&site_probs, drone_paths_1);
-        let success_2 = prob_mission_succeedes(&site_probs, drone_paths_2);
-        let success_3 = prob_mission_succeedes(&site_probs, drone_paths_3);
+        let success_1 = prob_mission_succeedes(&site_probs, drone_paths_1.iter());
+        let success_2 = prob_mission_succeedes(&site_probs, drone_paths_2.iter());
+        let success_3 = prob_mission_succeedes(&site_probs, drone_paths_3.iter());
         assert_eq!(success, success_1);
         assert_eq!(success, success_2);
         assert_eq!(success, success_3);
@@ -529,17 +528,17 @@ mod text {
         ];
         let results = compute_all_options(&site_probs, 2);
         let best_prob = results.last().unwrap().0;
+        let cutoff = best_prob & Prob::new(0.9999999);
         let best_results = results
             .into_iter()
-            .filter_map(|(p, res)| (p >= best_prob & Prob::new(0.9999999)).then_some(res))
+            .filter_map(|(p, res)| (p >= cutoff).then_some(res))
             .collect_vec();
         // TODO: all permutations of a single path should be `factorial(5)`.
         // why do we only see half that?
-        assert_eq!(best_results.len(), (5 * 4 * 3 * 2 * 1) / 2);
+        assert_eq!(best_results.len(), factorial(site_probs.len()).unwrap() / 2);
         for paths in best_results {
-            for (site_a, site_b) in izip!(paths[0].iter(), paths[1].iter().rev()) {
-                assert_eq!(site_a, site_b);
-            }
+            let snd_path_rev = paths[1].iter().cloned().rev().collect_vec();
+            assert_eq!(&paths[0], &snd_path_rev[..]);
         }
     }
 
