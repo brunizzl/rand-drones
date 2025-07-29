@@ -204,8 +204,10 @@ impl DronePaths {
         multiset_count(factorial(nr_sites)?, nr_drones)
     }
 
-    pub fn new(nr_drones: usize, nr_sites: usize) -> Self {
-        let flat = (0..nr_drones).flat_map(|_| 0..nr_sites).collect_vec();
+    /// returns `nr_drones` copies of `init_path`
+    pub fn new(nr_drones: usize, init_path: impl Iterator<Item = usize> + Clone) -> Self {
+        let flat = (0..nr_drones).flat_map(|_| init_path.clone()).collect_vec();
+        let nr_sites = init_path.count();
         Self { flat, nr_sites }
     }
 
@@ -273,7 +275,7 @@ pub fn compute_best_options_sequential(
         })
     }
 
-    let mut paths = DronePaths::new(nr_drones, nr_sites);
+    let mut paths = DronePaths::new(nr_drones, 0..nr_sites);
     let mut cutoff_prob = Prob::NEVER;
     let mut best = Vec::new();
 
@@ -343,11 +345,8 @@ pub fn compute_best_options_parallel(
     let chunks = first_drone_paths.chunks(nr_sites).collect_vec();
     let mut best = chunks
         .par_iter()
-        .map(|&fst_drone_path| {
-            let mut paths = DronePaths::new(nr_drones, nr_sites);
-            for path in paths.iter_mut() {
-                path.copy_from_slice(fst_drone_path);
-            }
+        .map(|fst_drone_path| {
+            let mut paths = DronePaths::new(nr_drones, fst_drone_path.iter().copied());
             let mut cutoff_prob = Prob::NEVER;
             let mut best = Vec::new();
             loop {
@@ -483,7 +482,7 @@ mod text {
 
     #[test]
     fn number_drone_paths_correct() {
-        let mut drone_paths = DronePaths::new(3, 5);
+        let mut drone_paths = DronePaths::new(3, 0..5);
         let mut nr_paths = 1;
         while drone_paths.next_paths_permutation().is_some() {
             nr_paths += 1;
