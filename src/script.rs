@@ -243,6 +243,40 @@ pub fn compute_all_options<const N: usize>(
     all_paths_with_probs
 }
 
+/// same as [`compute_all_options`], except only keeps the specified number of best options
+pub fn compute_best_options<const N: usize>(
+    site_probs: &[Prob; N],
+    nr_drones: usize,
+    nr_kept_paths: usize,
+) -> Vec<(Prob, DronePaths)> {
+    let nr_sites = site_probs.len();
+    let mut paths = DronePaths::new(nr_drones, nr_sites);
+    let mut cutoff_prob = Prob::NEVER;
+    let mut best = Vec::new();
+
+    loop {
+        let prob = prob_mission_succeedes(site_probs, paths.iter());
+        if prob > cutoff_prob {
+            best.push((prob, paths.clone()));
+            if best.len() >= 2 * nr_kept_paths {
+                best.sort_by_key(|x| !x.0);
+                best.truncate(nr_kept_paths);
+                cutoff_prob = best.last().unwrap().0;
+            }
+        }
+
+        if !paths.next_paths_permutation() {
+            break;
+        }
+    }
+
+    best.sort_by_key(|x| !x.0);
+    best.truncate(nr_kept_paths);
+    best.reverse();
+
+    best
+}
+
 fn simulate_success<'a>(
     nr_samples: usize,
     site_probs: &[Prob],
@@ -280,18 +314,18 @@ pub fn main() {
         Prob::new(0.551),
         Prob::new(0.62),
         Prob::new(0.83),
-        //Prob::new(0.87),
+        Prob::new(0.87),
         //Prob::new(0.92),
         //Prob::new(0.96),
     ];
     let nr_drones = 3;
 
-    let res = compute_all_options(&site_probs, nr_drones);
+    let res = compute_best_options(&site_probs, nr_drones, 100);
     println!("computed {} results.", res.len());
 
     let print_res_slice = |rs: &[(Prob, DronePaths)]| {
         for (prob, paths) in rs {
-            let estimate = simulate_success(10_000_000, &site_probs, paths.iter());
+            let estimate = simulate_success(100_000_000, &site_probs, paths.iter());
             println!("{prob} ({estimate}) {paths}");
         }
     };
