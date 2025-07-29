@@ -1,4 +1,4 @@
-use itertools::{Itertools, izip};
+use itertools::Itertools;
 
 use super::Prob;
 
@@ -11,20 +11,29 @@ fn drone_paths_valid<'a>(
 }
 
 /// the mission succeedes, if every site is successfully visited by at least one drone.
-pub fn prob_mission_succeedes<'a, const N: usize>(
-    site_probs: &[Prob; N],
+pub fn prob_mission_succeedes<'a>(
+    site_probs: &[Prob],
     drone_paths: impl Iterator<Item = &'a [usize]> + Clone,
 ) -> Prob {
     use std::collections::HashMap;
-    debug_assert!(drone_paths_valid(site_probs.len(), drone_paths.clone()));
+    let nr_sites = site_probs.len();
+    debug_assert!(drone_paths_valid(nr_sites, drone_paths.clone()));
+    assert!(
+        nr_sites <= std::mem::size_of::<usize>() * 8,
+        "memoisation relies on fixed bound on number of sites for efficient memory use."
+    );
 
     const NOT_VISITED: usize = usize::MAX;
-    let mut visited_sites = [NOT_VISITED; N];
-
-    fn visited_sites_bool<const N: usize>(visited_sites: &[usize; N]) -> [bool; N] {
-        let mut res = [false; N];
-        for (r, &s) in izip!(&mut res, visited_sites) {
-            *r = s != NOT_VISITED;
+    let mut visited_sites = vec![NOT_VISITED; nr_sites];
+    /// pack nr_sites many bools which determine which site was visited
+    /// (thus it is no longer differentiated, which drone visited which site)
+    fn pack_visited_sites(visited_sites: &[usize]) -> usize {
+        let mut res = 0;
+        for &s in visited_sites {
+            // `true` becomes `1`, `false` becomes `0`
+            const _: () = assert!(true as usize == 1 && false as usize == 0);
+            res |= (s != NOT_VISITED) as usize;
+            res <<= 1;
         }
         res
     }
@@ -33,11 +42,11 @@ pub fn prob_mission_succeedes<'a, const N: usize>(
     /// if `i_drone` many drones have flown so far
     /// and successfully visited every site `j` where `visited_sites[j] != NOT_VISITED`,
     /// what is the probability that the mission succedes overall?
-    fn prob_remaining_mission_succeedes<'b, const N: usize>(
+    fn prob_remaining_mission_succeedes<'b>(
         i_drone: usize,
-        memory: &mut HashMap<([bool; N], usize), Prob>,
-        visited_sites: &mut [usize; N],
-        site_probs: &[Prob; N],
+        memory: &mut HashMap<(usize, usize), Prob>,
+        visited_sites: &mut [usize],
+        site_probs: &[Prob],
         mut remaining_drone_paths: impl Iterator<Item = &'b [usize]> + Clone,
     ) -> Prob {
         if !visited_sites.contains(&NOT_VISITED) {
@@ -46,7 +55,7 @@ pub fn prob_mission_succeedes<'a, const N: usize>(
         let Some(drone_i_path) = remaining_drone_paths.next() else {
             return Prob::NEVER;
         };
-        let memoised_state = (visited_sites_bool(visited_sites), i_drone);
+        let memoised_state = (pack_visited_sites(visited_sites), i_drone);
         if let Some(val) = memory.get(&memoised_state) {
             return *val;
         }
@@ -178,6 +187,21 @@ impl std::ops::IndexMut<usize> for DronePaths {
 }
 
 impl DronePaths {
+    /// each path can have `factorial(self.nr_sites)` possibilities
+    /// and there are `self.nr_drones()` many paths.
+    /// -> count the number of multisets over universe size `factorial(self.nr_sites)` with `self.nr_drones()` elements each
+    pub fn nr_possible_paths(&self) -> Option<usize> {
+        fn factorial(mut n: usize) -> Option<usize> {
+            let mut res = 1usize;
+            while n > 0 {
+                res = res.checked_mul(n)?;
+                n -= 1;
+            }
+            Some(res)
+        }
+        multiset_count(factorial(self.nr_sites)?, self.nr_drones())
+    }
+
     pub fn new(nr_drones: usize, nr_sites: usize) -> Self {
         let flat = (0..nr_drones).flat_map(|_| 0..nr_sites).collect_vec();
         Self { flat, nr_sites }
@@ -254,6 +278,14 @@ pub fn compute_best_options<const N: usize>(
     let mut cutoff_prob = Prob::NEVER;
     let mut best = Vec::new();
 
+    if let Some(nr_loop_iterations) = paths.nr_possible_paths() {
+        println!("compute probabilities of {nr_loop_iterations} paths.");
+    } else {
+        println!("WARNING: more than {} paths are checked!", {
+            1u128 << (std::mem::size_of::<usize>() * 8)
+        })
+    }
+
     loop {
         let prob = prob_mission_succeedes(site_probs, paths.iter());
         if prob > cutoff_prob {
@@ -311,7 +343,7 @@ pub fn main() {
     let site_probs = [
         Prob::new(0.41),
         Prob::new(0.5),
-        Prob::new(0.551),
+        //Prob::new(0.551),
         Prob::new(0.62),
         Prob::new(0.83),
         Prob::new(0.87),
@@ -321,11 +353,10 @@ pub fn main() {
     let nr_drones = 3;
 
     let res = compute_best_options(&site_probs, nr_drones, 100);
-    println!("computed {} results.", res.len());
 
     let print_res_slice = |rs: &[(Prob, DronePaths)]| {
         for (prob, paths) in rs {
-            let estimate = simulate_success(100_000_000, &site_probs, paths.iter());
+            let estimate = simulate_success(100_000, &site_probs, paths.iter());
             println!("{prob} ({estimate}) {paths}");
         }
     };
@@ -340,6 +371,8 @@ pub fn main() {
 
 #[cfg(test)]
 mod text {
+    use itertools::izip;
+
     use super::*;
 
     #[test]
@@ -388,11 +421,7 @@ mod text {
             nr_paths += 1;
         }
 
-        let universe_size = 5 * 4 * 3 * 2 * 1;
-        let cardinality = 3;
-        let nr_multisets = multiset_count(universe_size, cardinality);
-
-        assert_eq!(Some(nr_paths), nr_multisets);
+        assert_eq!(Some(nr_paths), drone_paths.nr_possible_paths());
     }
 
     #[test]
