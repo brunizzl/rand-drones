@@ -203,6 +203,14 @@ impl EquivSites {
         }
         true
     }
+
+    pub fn nr_unique_fst_paths(&self, nr_sites: usize) -> Option<usize> {
+        let mut res = factorial(nr_sites)?;
+        for class in &self.0 {
+            res /= factorial(class.len())?;
+        }
+        Some(res)
+    }
 }
 
 /// can only store those paths, where each drone visits each site exactly once.
@@ -267,7 +275,6 @@ impl DronePaths {
     /// reorders drone paths, so that the next lexicographic larger combination of paths is produced.
     /// if such an ordering exists, the index of the start of the first changed path segment is returned,
     /// otherwise `None`.
-    /// note: in this program, the interesting cases of the output are `None`, `Some(0)` and the rest.
     pub fn next_paths_permutation(&mut self, equiv: &EquivSites) -> Option<usize> {
         let mut path_start = self.flat.len();
         debug_assert!(path_start % self.nr_sites == 0);
@@ -347,9 +354,7 @@ pub fn compute_best_options_sequential(
 }
 
 /// computes the exact same result as [`compute_best_options_sequential`],
-/// but utilizes all the machines cores while doing so.
-/// note: because the jobs are split to handle cases for different paths of the first drone,
-/// more threads are only used if the sites form more than one equivalent class.
+/// but utilizes multiple threads while doing so..
 pub fn compute_best_options_parallel(
     site_probs: &[Prob],
     nr_drones: usize,
@@ -360,22 +365,45 @@ pub fn compute_best_options_parallel(
 
     let nr_sites = site_probs.len();
     let equiv = EquivSites::new(site_probs);
-    // all possible permutations of the first drone path packed together in one looooong vector
+    // a single parallel job always keeps the path of either the first drone or the first two drones constant.
+    // the first two drones are used to split jobs only if the first drone alone has too few different paths.
+    let nr_start_drones = {
+        let few_first_paths = equiv
+            .nr_unique_fst_paths(nr_sites)
+            .is_some_and(|nr| nr < 10);
+        if few_first_paths { 2 } else { 1 }
+    }
+    .min(nr_drones);
+    // all possible permutations of paths of the first one or two drones together in one looooong vector
     // (note: i was not able to get the parallel iterator to work with some lazy structure, thus we do this instead.)
-    let fst_drone_paths_flat = {
+    let start_drone_paths_flat = {
         let mut res = Vec::new();
-        let mut curr = DronePaths::new(1, 0..nr_sites);
-        res.extend_from_slice(&curr[0]);
+        let mut curr = DronePaths::new(nr_start_drones, 0..nr_sites);
+        res.extend_from_slice(&curr.flat);
         while curr.next_paths_permutation(&equiv).is_some() {
-            res.extend_from_slice(&curr[0]);
+            res.extend_from_slice(&curr.flat);
         }
         res
     };
-    let fst_drone_paths = fst_drone_paths_flat.chunks(nr_sites).collect_vec();
-    let mut best = fst_drone_paths
+    let start_drones_paths = start_drone_paths_flat
+        .chunks(nr_start_drones * nr_sites)
+        .collect_vec();
+    assert!(
+        nr_start_drones != 1
+            || Some(start_drones_paths.len()) == equiv.nr_unique_fst_paths(nr_sites)
+    );
+    let mut best = start_drones_paths
         .par_iter()
-        .map(|fst_drone_path| {
-            let mut paths = DronePaths::new(nr_drones, fst_drone_path.iter().copied());
+        .map(|start_drones_path| {
+            let mut paths = {
+                // if there is only a single drone, then d1 == d2
+                let d1 = 0..nr_sites;
+                let d2 = (start_drones_path.len() - nr_sites)..;
+                assert!(start_drones_path[d1.clone()] <= start_drones_path[d2.clone()]);
+                let mut paths = DronePaths::new(nr_drones, start_drones_path[d2].iter().copied());
+                paths[0].copy_from_slice(&start_drones_path[d1]);
+                paths
+            };
             let mut cutoff_prob = Prob::NEVER;
             let mut best = Vec::new();
             loop {
@@ -388,7 +416,12 @@ pub fn compute_best_options_parallel(
                         cutoff_prob = best.last().unwrap().0;
                     }
                 }
-                if paths.next_paths_permutation(&equiv).is_none_or(|i| i == 0) {
+                // if the change in paths happend in one of the paths we split the
+                // parallel jobs over, then this job is done.
+                if paths
+                    .next_paths_permutation(&equiv)
+                    .is_none_or(|i| i <= (nr_start_drones - 1) * nr_sites)
+                {
                     break;
                 }
             }
@@ -574,13 +607,41 @@ mod text {
     }
 
     #[test]
-    fn parallel_eq_sequential() {
+    fn parallel_eq_sequential_1() {
         let site_probs = [
-            Prob::new(0.3),
-            Prob::new(0.4),
+            Prob::new(0.25),
+            Prob::new(0.25),
+            Prob::new(0.25),
             Prob::new(0.6),
             Prob::new(0.8),
         ];
+        assert_eq!(
+            EquivSites::new(&site_probs).nr_unique_fst_paths(site_probs.len()),
+            // note: this is >= 10, thus parallel splits threads only depending on the fst drone's path
+            Some(5 * 4 * 3 * 2 * 1 / (2 * 3))
+        );
+
+        let nr_drones = 3;
+        let nr_kept_paths = 200;
+        let res_par = compute_best_options_parallel(&site_probs, nr_drones, nr_kept_paths);
+        let res_seq = compute_best_options_sequential(&site_probs, nr_drones, nr_kept_paths);
+        assert_eq!(res_par, res_seq);
+    }
+
+    #[test]
+    fn parallel_eq_sequential_2() {
+        let site_probs = [
+            Prob::new(0.25),
+            Prob::new(0.25),
+            Prob::new(0.5),
+            Prob::new(0.5),
+        ];
+        assert_eq!(
+            EquivSites::new(&site_probs).nr_unique_fst_paths(site_probs.len()),
+            // note: this is < 10, thus parallel splits threads depending also on snd drone's path
+            Some(4 * 3 * 2 * 1 / 2 / 2)
+        );
+
         let nr_drones = 3;
         let nr_kept_paths = 200;
         let res_par = compute_best_options_parallel(&site_probs, nr_drones, nr_kept_paths);
