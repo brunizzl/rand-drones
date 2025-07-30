@@ -1,4 +1,4 @@
-use itertools::Itertools;
+use itertools::{Itertools, izip};
 
 use super::Prob;
 
@@ -111,6 +111,7 @@ pub fn prob_mission_succeedes<'a>(
     prob_remaining_mission_succeedes(0, &mut memory, &mut visited_sites, site_probs, drone_paths)
 }
 
+#[allow(dead_code)]
 fn factorial(mut n: usize) -> Option<usize> {
     let mut res = 1usize;
     while n > 0 {
@@ -160,6 +161,50 @@ pub fn next_permutation<T: PartialOrd>(nums: &mut [T]) -> bool {
     true
 }
 
+/// if two or more sites have the same success probability,
+/// all sites with the same probability make up one entry of [`Self::0`].
+#[derive(Debug, Clone)]
+pub struct EquivSites(Vec<Vec<usize>>);
+
+impl EquivSites {
+    pub fn new(site_probs: &[Prob]) -> Self {
+        let mut with_indices = izip!(0.., site_probs.iter().copied()).collect_vec();
+        with_indices.sort_by_key(|x| x.1);
+        let mut res = Vec::new();
+        while let Some((i1, p1)) = with_indices.pop() {
+            let mut eq_class = vec![i1];
+            while let Some(&(i2, p2)) = with_indices.last()
+                && p1 == p2
+            {
+                with_indices.pop();
+                eq_class.push(i2);
+            }
+            if eq_class.len() > 1 {
+                eq_class.reverse();
+                debug_assert!(eq_class.iter().is_sorted());
+                res.push(eq_class);
+            }
+        }
+        Self(res)
+    }
+
+    /// returns true iff every eqivalence class of `self` is ordered in `path`.
+    pub fn eqs_ordered(&self, path: &[usize]) -> bool {
+        for class in &self.0 {
+            let mut i = 0;
+            for &elem in class {
+                while path[i] != elem {
+                    i += 1;
+                    if i == path.len() {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+}
+
 /// can only store those paths, where each drone visits each site exactly once.
 /// (any optimal set of paths satisfies this condition)
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,13 +242,6 @@ impl std::ops::IndexMut<usize> for DronePaths {
 }
 
 impl DronePaths {
-    /// each path can have `factorial(self.nr_sites)` possibilities
-    /// and there are `self.nr_drones()` many paths.
-    /// -> count the number of multisets over universe size `factorial(self.nr_sites)` with `self.nr_drones()` elements each
-    pub fn nr_possible_paths(nr_drones: usize, nr_sites: usize) -> Option<usize> {
-        multiset_count(factorial(nr_sites)?, nr_drones)
-    }
-
     /// returns `nr_drones` copies of `init_path`
     pub fn new(nr_drones: usize, init_path: impl Iterator<Item = usize> + Clone) -> Self {
         let flat = (0..nr_drones).flat_map(|_| init_path.clone()).collect_vec();
@@ -230,13 +268,20 @@ impl DronePaths {
     /// if such an ordering exists, the index of the start of the first changed path segment is returned,
     /// otherwise `None`.
     /// note: in this program, the interesting cases of the output are `None`, `Some(0)` and the rest.
-    pub fn next_paths_permutation(&mut self) -> Option<usize> {
+    pub fn next_paths_permutation(&mut self, equiv: &EquivSites) -> Option<usize> {
         let mut path_start = self.flat.len();
         debug_assert!(path_start % self.nr_sites == 0);
         while path_start != 0 {
             let path_end = path_start;
             path_start -= self.nr_sites;
-            if next_permutation(&mut self.flat[path_start..path_end]) {
+            let found_next = loop {
+                let path = &mut self.flat[path_start..path_end];
+                let could_permute = next_permutation(path);
+                if path_start != 0 || !could_permute || equiv.eqs_ordered(path) {
+                    break could_permute;
+                }
+            };
+            if found_next {
                 let (fixed, reset) = self.flat.split_at_mut(path_end);
                 let changed_path = &fixed[path_start..path_end];
                 for path_to_reset in reset.chunks_mut(self.nr_sites) {
@@ -267,14 +312,7 @@ pub fn compute_best_options_sequential(
     let start_time = std::time::Instant::now();
 
     let nr_sites = site_probs.len();
-    if let Some(nr_loop_iterations) = DronePaths::nr_possible_paths(nr_drones, nr_sites) {
-        println!("compute probabilities of {nr_loop_iterations} paths.");
-    } else {
-        println!("WARNING: more than {} paths are checked!", {
-            1u128 << (std::mem::size_of::<usize>() * 8)
-        })
-    }
-
+    let eqiv = EquivSites::new(site_probs);
     let mut paths = DronePaths::new(nr_drones, 0..nr_sites);
     let mut cutoff_prob = Prob::NEVER;
     let mut best = Vec::new();
@@ -290,7 +328,7 @@ pub fn compute_best_options_sequential(
             }
         }
 
-        if paths.next_paths_permutation().is_none() {
+        if paths.next_paths_permutation(&eqiv).is_none() {
             break;
         }
     }
@@ -310,6 +348,8 @@ pub fn compute_best_options_sequential(
 
 /// computes the exact same result as [`compute_best_options_sequential`],
 /// but utilizes all the machines cores while doing so.
+/// note: because the jobs are split to handle cases for different paths of the first drone,
+/// more threads are only used if the sites form more than one equivalent class.
 pub fn compute_best_options_parallel(
     site_probs: &[Prob],
     nr_drones: usize,
@@ -319,27 +359,16 @@ pub fn compute_best_options_parallel(
     let start_time = std::time::Instant::now();
 
     let nr_sites = site_probs.len();
-    if let Some(nr_loop_iterations) = DronePaths::nr_possible_paths(nr_drones, nr_sites) {
-        println!("compute probabilities of {nr_loop_iterations} paths.");
-    } else {
-        println!("WARNING: more than {} paths are checked!", {
-            1u128 << (std::mem::size_of::<usize>() * 8)
-        })
-    }
-
+    let equiv = EquivSites::new(site_probs);
     // all possible permutations of the first drone path packed together in one looooong vector
     // (note: i was not able to get the parallel iterator to work with some lazy structure, thus we do this instead.)
     let fst_drone_paths_flat = {
-        let len = factorial(nr_sites)
-            .and_then(|fac| fac.checked_mul(nr_sites))
-            .unwrap();
-        let mut res = Vec::with_capacity(len);
-        let mut curr = (0..nr_sites).collect_vec();
-        res.extend_from_slice(&curr);
-        while next_permutation(&mut curr) {
-            res.extend_from_slice(&curr);
+        let mut res = Vec::new();
+        let mut curr = DronePaths::new(1, 0..nr_sites);
+        res.extend_from_slice(&curr[0]);
+        while curr.next_paths_permutation(&equiv).is_some() {
+            res.extend_from_slice(&curr[0]);
         }
-        debug_assert_eq!(res.len(), len);
         res
     };
     let fst_drone_paths = fst_drone_paths_flat.chunks(nr_sites).collect_vec();
@@ -359,7 +388,7 @@ pub fn compute_best_options_parallel(
                         cutoff_prob = best.last().unwrap().0;
                     }
                 }
-                if paths.next_paths_permutation().is_none_or(|i| i == 0) {
+                if paths.next_paths_permutation(&equiv).is_none_or(|i| i == 0) {
                     break;
                 }
             }
@@ -414,23 +443,24 @@ fn simulate_success_prob<'a>(
 }
 
 pub fn main() {
-    let site_probs = [
-        Prob::new(0.41),
-        Prob::new(0.5),
-        //Prob::new(0.551),
-        Prob::new(0.62),
-        Prob::new(0.83),
-        Prob::new(0.87),
-        //Prob::new(0.92),
-        //Prob::new(0.96),
-    ];
-    //let site_probs = [Prob::new(0.5); 5];
-    let nr_drones = 3;
+    //let site_probs = [
+    //    Prob::new(0.41),
+    //    Prob::new(0.5),
+    //    //Prob::new(0.551),
+    //    Prob::new(0.62),
+    //    Prob::new(0.83),
+    //    Prob::new(0.87),
+    //    //Prob::new(0.92),
+    //    //Prob::new(0.96),
+    //];
+    let site_probs = [Prob::new(0.5); 5];
+    let nr_drones = 5;
     let nr_kept = 100;
-    let nr_simulations = 0; //10_000_000;
+    let nr_simulations = 1_000;
 
     let res = compute_best_options_parallel(&site_probs, nr_drones, nr_kept);
-    println!("show best {nr_kept} results.");
+    //let res = compute_all_options(&site_probs, nr_drones);
+    println!("show best {} results.", res.len());
     for (prob, paths) in res {
         let estimate = simulate_success_prob(nr_simulations, &site_probs, paths.iter());
         println!("{prob} (ca. {estimate})   {paths}");
@@ -482,12 +512,13 @@ mod text {
     #[test]
     fn number_drone_paths_correct() {
         let mut drone_paths = DronePaths::new(3, 0..5);
+        let equiv = EquivSites(Vec::new());
         let mut nr_paths = 1;
-        while drone_paths.next_paths_permutation().is_some() {
+        while drone_paths.next_paths_permutation(&equiv).is_some() {
             nr_paths += 1;
         }
 
-        assert_eq!(Some(nr_paths), DronePaths::nr_possible_paths(3, 5));
+        assert_eq!(Some(nr_paths), multiset_count(factorial(5).unwrap(), 3));
     }
 
     #[test]
