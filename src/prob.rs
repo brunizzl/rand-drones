@@ -24,6 +24,10 @@ impl Prob {
         Self(val)
     }
 
+    pub fn exact(self) -> super::ExactProb {
+        super::ExactProb::new(self.value())
+    }
+
     /// if two events have two independent given propabilities,
     /// this computes the propability that none occur.
     pub fn nand(self, other: Self) -> Self {

@@ -1,5 +1,7 @@
 use itertools::{Itertools, izip};
 
+use crate::ExactProb;
+
 use super::Prob;
 
 /// the indices of sites visited by each drone must be valid.
@@ -16,6 +18,7 @@ pub fn prob_mission_succeedes<'a>(
     site_probs: &[Prob],
     drone_paths: impl Iterator<Item = &'a [usize]> + Clone,
 ) -> Prob {
+    let site_probs = site_probs.iter().copied().map(Prob::exact).collect_vec();
     use std::collections::HashMap;
     let nr_sites = site_probs.len();
     debug_assert!(drone_paths_valid(nr_sites, drone_paths.clone()));
@@ -45,28 +48,28 @@ pub fn prob_mission_succeedes<'a>(
     /// what is the probability that the mission succedes overall?
     fn prob_remaining_mission_succeedes<'b>(
         i_drone: usize,
-        memory: &mut HashMap<(usize, usize), Prob>,
+        memory: &mut HashMap<(usize, usize), ExactProb>,
         visited_sites: &mut [usize],
-        site_probs: &[Prob],
+        site_probs: &[ExactProb],
         mut remaining_drone_paths: impl Iterator<Item = &'b [usize]> + Clone,
-    ) -> Prob {
+    ) -> ExactProb {
         if !visited_sites.contains(&NOT_VISITED) {
-            return Prob::ALWAYS;
+            return ExactProb::always();
         }
         let Some(drone_i_path) = remaining_drone_paths.next() else {
-            return Prob::NEVER;
+            return ExactProb::never();
         };
         let memoised_state = (pack_visited_sites(visited_sites), i_drone);
         if let Some(val) = memory.get(&memoised_state) {
-            return *val;
+            return val.clone();
         }
 
         // this loop looks at disjoint events.
         // either drone_i dies at exactly the first visited site, or the second or ... or drone_i survives.
         // because two of these events are impossible to happen simultaniously,
         // we can simply add the success chances of every case.
-        let mut drone_i_still_alive = Prob::ALWAYS;
-        let mut mission_success = Prob::NEVER;
+        let mut drone_i_still_alive = ExactProb::always();
+        let mut mission_success = ExactProb::never();
         // this variable could be recomputed every loop iteration,
         // but if the currently visited site was already visited by an earlier drone, the value stays the same.
         // because the exponential explosion happens in the recursion calls when this is recomputed,
@@ -79,10 +82,10 @@ pub fn prob_mission_succeedes<'a>(
             remaining_drone_paths.clone(),
         );
         for &drone_i_site in drone_i_path {
-            let drone_i_dies_now = drone_i_still_alive & !site_probs[drone_i_site];
-            mission_success += drone_i_dies_now & finish_remaining;
+            let drone_i_dies_now = drone_i_still_alive.clone() & !&site_probs[drone_i_site].clone();
+            mission_success += drone_i_dies_now & finish_remaining.clone();
 
-            drone_i_still_alive &= site_probs[drone_i_site];
+            drone_i_still_alive &= &site_probs[drone_i_site];
             if visited_sites[drone_i_site] == NOT_VISITED {
                 visited_sites[drone_i_site] = i_drone;
                 // `visited_sites` was changed, so we must update the variable depending on it.
@@ -95,8 +98,8 @@ pub fn prob_mission_succeedes<'a>(
                 );
             }
         }
-        let drone_i_never_dies = drone_i_still_alive;
-        mission_success += drone_i_never_dies & finish_remaining;
+        let drone_i_never_dies = &drone_i_still_alive;
+        mission_success += drone_i_never_dies & &finish_remaining;
 
         for site in visited_sites {
             if *site == i_drone {
@@ -104,11 +107,11 @@ pub fn prob_mission_succeedes<'a>(
             }
         }
 
-        memory.insert(memoised_state, mission_success);
+        memory.insert(memoised_state, mission_success.clone());
         mission_success
     }
 
-    prob_remaining_mission_succeedes(0, &mut memory, &mut visited_sites, site_probs, drone_paths)
+    prob_remaining_mission_succeedes(0, &mut memory, &mut visited_sites, &site_probs, drone_paths).approximate()
 }
 
 #[allow(dead_code)]
@@ -466,7 +469,7 @@ fn simulate_success_prob<'a>(
 #[allow(dead_code)]
 fn run_fixed_instance(nr_drones: usize, site_probs: &[Prob]) {
     let nr_kept = 100;
-    let nr_simulations = 1_000;
+    let nr_simulations = 10_000_000;
 
     let res = compute_best_options_parallel(&site_probs, nr_drones, nr_kept);
     //let res = compute_all_options(&site_probs, nr_drones);
@@ -480,8 +483,7 @@ fn run_fixed_instance(nr_drones: usize, site_probs: &[Prob]) {
 fn best_results(solution: &[(Prob, DronePaths)]) -> &[(Prob, DronePaths)] {
     assert!(solution.is_sorted_by_key(|x| x.0));
     let best_prob = solution.last().unwrap().0;
-    let cutoff = best_prob & Prob::new(0.99999);
-    let start = solution.iter().position(|(p, _)| *p >= cutoff).unwrap();
+    let start = solution.iter().position(|(p, _)| *p >= best_prob).unwrap();
     &solution[start..]
 }
 
@@ -538,33 +540,24 @@ pub fn test_random_sites_for_removability() {
         for &p in &site_probs {
             print!("{p} ");
         }
-        let min_diff = {
-            let mut pairs = vec![Prob::NEVER; nr_sites + 2];
-            pairs[1..(1 + nr_sites)].copy_from_slice(&site_probs);
-            pairs[1 + nr_sites] = Prob::ALWAYS;
-            let int_diff = |(a, b): (&Prob, &Prob)| ((b.value() - a.value()) * 1e10) as u64;
-            pairs.iter().tuple_windows().map(int_diff).min().unwrap() as f64 * 1e-10
-        };
-        print!("(diff >= {min_diff:>.6})");
         println!(" -> {removable:?}");
     }
 }
 
 pub fn main() {
-    //let site_probs = [
-    //    Prob::new(0.2988236),
-    //    Prob::new(0.2988236),
-    //    Prob::new(0.2988236),
-    //    Prob::new(0.2988236),
-    //    Prob::new(0.2988236),
-    //    Prob::new(0.2988236),
-    //];
-    //let site_probs = [Prob::new(0.002); 6];
-    //let nr_drones = 3;
+    let _site_probs = [
+        Prob::new(0.125),
+        Prob::new(0.25),
+        Prob::new(0.5),
+        Prob::new(0.625),
+        Prob::new(0.75),
+    ];
+    //let _site_probs = [Prob::new(0.002); 6];
+    let _nr_drones = 3;
 
-    //run_fixed_instance(nr_drones, &site_probs);
+    //run_fixed_instance(_nr_drones, &_site_probs);
 
-    //let removable = removable_sites(nr_drones, &site_probs);
+    //let removable = removable_sites(_nr_drones, &_site_probs);
     //println!("{removable:?}");
 
     test_random_sites_for_removability();

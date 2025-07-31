@@ -13,4 +13,7 @@
 mod prob;
 pub use prob::Prob;
 
+mod exact_prob;
+pub use exact_prob::ExactProb;
+
 pub mod script;
