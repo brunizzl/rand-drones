@@ -181,7 +181,7 @@ impl EquivSites {
             }
             if eq_class.len() > 1 {
                 eq_class.reverse();
-                debug_assert!(eq_class.iter().is_sorted());
+                debug_assert!(eq_class.is_sorted());
                 res.push(eq_class);
             }
         }
@@ -225,8 +225,10 @@ pub struct DronePaths {
 
 impl std::fmt::Display for DronePaths {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut sep = "";
         for path in self.iter() {
-            write!(f, "{path:?} ")?;
+            write!(f, "{sep}{path:?}")?;
+            sep = " ";
         }
         Ok(())
     }
@@ -316,8 +318,6 @@ pub fn compute_best_options_sequential(
     nr_drones: usize,
     nr_kept_paths: usize,
 ) -> Vec<(Prob, DronePaths)> {
-    let start_time = std::time::Instant::now();
-
     let nr_sites = site_probs.len();
     let eqiv = EquivSites::new(site_probs);
     let mut paths = DronePaths::new(nr_drones, 0..nr_sites);
@@ -342,14 +342,7 @@ pub fn compute_best_options_sequential(
 
     best.sort_by_key(|x| !x.0);
     best.truncate(nr_kept_paths);
-    best.reverse();
-
-    let end_time = std::time::Instant::now();
-    println!(
-        "sequential implementation took {:?}.",
-        end_time - start_time
-    );
-
+    best.sort_by_key(|x| x.0);
     best
 }
 
@@ -361,7 +354,6 @@ pub fn compute_best_options_parallel(
     nr_kept_paths: usize,
 ) -> Vec<(Prob, DronePaths)> {
     use rayon::prelude::*;
-    let start_time = std::time::Instant::now();
 
     let nr_sites = site_probs.len();
     let equiv = EquivSites::new(site_probs);
@@ -433,11 +425,7 @@ pub fn compute_best_options_parallel(
             a.truncate(nr_kept_paths);
             a
         });
-    best.reverse();
-
-    let end_time = std::time::Instant::now();
-    println!("parallel implementation took {:?}.", end_time - start_time);
-
+    best.sort_by_key(|x| x.0);
     best
 }
 
@@ -472,22 +460,11 @@ fn simulate_success_prob<'a>(
         })
         .sum();
 
-    Prob::new((nr_successfull as f64) / (nr_samples as f64))
+    Prob::new((nr_successfull as f64) / (nr_samples.max(1) as f64))
 }
 
-pub fn main() {
-    //let site_probs = [
-    //    Prob::new(0.41),
-    //    Prob::new(0.5),
-    //    //Prob::new(0.551),
-    //    Prob::new(0.62),
-    //    Prob::new(0.83),
-    //    Prob::new(0.87),
-    //    //Prob::new(0.92),
-    //    //Prob::new(0.96),
-    //];
-    let site_probs = [Prob::new(0.5); 5];
-    let nr_drones = 5;
+#[allow(dead_code)]
+fn run_fixed_instance(nr_drones: usize, site_probs: &[Prob]) {
     let nr_kept = 100;
     let nr_simulations = 1_000;
 
@@ -498,6 +475,99 @@ pub fn main() {
         let estimate = simulate_success_prob(nr_simulations, &site_probs, paths.iter());
         println!("{prob} (ca. {estimate})   {paths}");
     }
+}
+
+fn best_results(solution: &[(Prob, DronePaths)]) -> &[(Prob, DronePaths)] {
+    assert!(solution.is_sorted_by_key(|x| x.0));
+    let best_prob = solution.last().unwrap().0;
+    let cutoff = best_prob & Prob::new(0.99999);
+    let start = solution.iter().position(|(p, _)| *p >= cutoff).unwrap();
+    &solution[start..]
+}
+
+/// returns the indices of all sites that can be removed 
+/// in order for an optimal solution of the given problem to be the same as an optimal solution
+/// for the problem with a site removed, modulo the removed site.
+/// e.g. if `[0, 3, 1, 2]` is a (path of an) optimal solution of the full problem 
+/// and if `[0, 1, 2]` is a (path of an) optimal solution to the problem with site `3` taken away, 
+/// then the original solution can be build by inserting site `3` somewhere in the previous solution.
+/// hence: in the example, the returned values would include `3`.
+#[allow(dead_code)]
+fn removable_sites(nr_drones: usize, site_probs: &[Prob]) -> Vec<usize> {
+    let nr_sites = site_probs.len();
+    let full_solution = compute_best_options_parallel(&site_probs, nr_drones, 100);
+    let bests = best_results(&full_solution);
+
+    let mut res = Vec::new();
+    for i in 0..nr_sites {
+        let mut smaller_probs = Vec::from(site_probs);
+        // note: replacing one site with a site of success probability 1 is the same as removing this site:
+        // the new site can be inserted everywhere in a drone path and not change the outcome.
+        smaller_probs[i] = Prob::ALWAYS;
+        let nr_reduced_kept = 10 * bests.len() * nr_sites.pow(nr_drones as u32);
+        let reduced_solution = compute_best_options_parallel(&smaller_probs, nr_drones, nr_reduced_kept);
+        let reduced_bests = best_results(&reduced_solution);
+        // ensure that the function will not fail because we failed to keep enough solutions.
+        assert!(reduced_bests.len() < reduced_solution.len());
+
+        let mut i_is_removable = false;
+        for (_, best) in bests {
+            i_is_removable |= reduced_bests.iter().any(|(_, rb)| rb == best);
+        }
+        if i_is_removable {
+            res.push(i);
+        }
+    }
+    res
+}
+
+pub fn test_random_sites_for_removability() {
+    let nr_sites = 5;
+    let nr_drones = 3;
+    for _ in 0..100 {
+        let site_probs = {
+            let mut res = Vec::new();
+            for _ in 0..nr_sites {
+                let site_prob = Prob::new(rand::random());
+                res.push(site_prob);
+            }
+            res.sort();
+            res
+        };
+        let removable = removable_sites(nr_drones, &site_probs);
+        for &p in &site_probs {
+            print!("{p} ");
+        }
+        let min_diff = {
+            let mut pairs = vec![Prob::NEVER; nr_sites + 2];
+            pairs[1..(1 + nr_sites)].copy_from_slice(&site_probs);
+            pairs[1 + nr_sites] = Prob::ALWAYS;
+            let int_diff = |(a, b): (&Prob, &Prob)| ((b.value() - a.value()) * 1e10) as u64;
+            pairs.iter().tuple_windows().map(int_diff).min().unwrap() as f64 * 1e-10
+        };
+        print!("(diff >= {min_diff:>.6})");
+        println!(" -> {removable:?}");
+    }
+}
+
+pub fn main() {
+    //let site_probs = [
+    //    Prob::new(0.2988236),
+    //    Prob::new(0.2988236),
+    //    Prob::new(0.2988236),
+    //    Prob::new(0.2988236),
+    //    Prob::new(0.2988236),
+    //    Prob::new(0.2988236),
+    //];
+    //let site_probs = [Prob::new(0.002); 6];
+    //let nr_drones = 3;
+
+    //run_fixed_instance(nr_drones, &site_probs);
+
+    //let removable = removable_sites(nr_drones, &site_probs);
+    //println!("{removable:?}");
+
+    test_random_sites_for_removability();
 }
 
 #[cfg(test)]
@@ -591,16 +661,11 @@ mod text {
             Prob::new(0.9),
         ];
         let results = compute_all_options(&site_probs, 2);
-        let best_prob = results.last().unwrap().0;
-        let cutoff = best_prob & Prob::new(0.9999999);
-        let best_results = results
-            .into_iter()
-            .filter_map(|(p, res)| (p >= cutoff).then_some(res))
-            .collect_vec();
+        let best = best_results(&results);
         // TODO: all permutations of a single path should be `factorial(5)`.
         // why do we only see half that?
-        assert_eq!(best_results.len(), factorial(site_probs.len()).unwrap() / 2);
-        for paths in best_results {
+        assert_eq!(best.len(), factorial(site_probs.len()).unwrap() / 2);
+        for (_, paths) in best {
             let snd_path_rev = paths[1].iter().cloned().rev().collect_vec();
             assert_eq!(&paths[0], &snd_path_rev[..]);
         }
